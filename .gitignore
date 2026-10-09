@@ -1,0 +1,40 @@
+# Maven
+target/
+.mvn/wrapper/maven-wrapper.jar
+!.mvn/wrapper/maven-wrapper.properties
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+release.properties
+dependency-reduced-pom.xml
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+/out/
+
+# VS Code
+.vscode/
+
+# Eclipse / STS
+.classpath
+.project
+.settings/
+.factorypath
+/bin/
+
+# Entorno local
+.env
+*.log
+logs/
+
+# Claude Code (personal, no se comparte)
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
