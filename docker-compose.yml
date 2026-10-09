@@ -1,0 +1,232 @@
+
+x-java-service: &java-service
+  restart: unless-stopped
+  mem_limit: 512m
+  environment: &java-env
+    JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    BLOQUEO_REDIS_DIRECCION: redis://redis:6379
+    MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+    MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT: http://otel-collector:4318/v1/logs
+    ENTORNO: ${ENTORNO:-local}
+  healthcheck: &java-healthcheck
+    test:
+      - CMD
+      - bash
+      - -c
+      - >-
+        exec 3<>/dev/tcp/127.0.0.1/8080 &&
+        printf 'GET /actuator/health/readiness HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+        grep -q '"status":"UP"' <&3
+    interval: 5s
+    timeout: 3s
+    retries: 30
+    start_period: 20s
+  depends_on: &java-depends-on
+    postgres:
+      condition: service_healthy
+    kafka:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    otel-collector:
+      condition: service_started
+
+x-ms-pedidos: &ms-pedidos
+  <<: *java-service
+  build: ./ms-pedidos
+  image: pedidos-inventario/ms-pedidos:local
+  environment:
+    <<: *java-env
+    ORDER_DB_URL: jdbc:postgresql://postgres:5432/orders_db
+    ORDER_DB_USER: orders_user
+    ORDER_DB_PASSWORD: orders_user
+
+x-ms-inventario: &ms-inventario
+  <<: *java-service
+  build: ./ms-inventario
+  image: pedidos-inventario/ms-inventario:local
+  environment:
+    <<: *java-env
+    INVENTORY_DB_URL: jdbc:postgresql://postgres:5432/inventory_db
+    INVENTORY_DB_USER: inventory_user
+    INVENTORY_DB_PASSWORD: inventory_user
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres -d inventory_db && pg_isready -U postgres -d orders_db]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.2.1
+    restart: unless-stopped
+    mem_limit: 768m
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: [CMD-SHELL, /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  redis:
+    image: redis:8.8-alpine
+    restart: unless-stopped
+    mem_limit: 64m
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    restart: unless-stopped
+    mem_limit: 128m
+    command: [--config=/etc/otelcol/config.yaml]
+    volumes:
+      - ./infra/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - jaeger
+      - seq
+
+  seq:
+    image: datalust/seq:2026.1.17182
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      ACCEPT_EULA: "Y"
+      SEQ_FIRSTRUN_NOAUTHENTICATION: "true"
+    ports:
+      - "${SEQ_PUERTO:-5342}:80"
+    volumes:
+      - seq-data:/data
+
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0
+    restart: unless-stopped
+    mem_limit: 256m
+    ports:
+      - "16686:16686"
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    restart: unless-stopped
+    mem_limit: 256m
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: [full]
+    restart: unless-stopped
+    mem_limit: 256m
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - jaeger
+
+  ms-pedidos-1:
+    <<: *ms-pedidos
+    ports:
+      - "8081:8080"
+
+  ms-pedidos-2:
+    <<: *ms-pedidos
+    build: !reset null
+    pull_policy: never
+    profiles: [full]
+    ports:
+      - "8082:8080"
+
+  ms-inventario-1:
+    <<: *ms-inventario
+    ports:
+      - "8091:8080"
+
+  ms-inventario-2:
+    <<: *ms-inventario
+    build: !reset null
+    pull_policy: never
+    profiles: [full]
+    ports:
+      - "8092:8080"
+
+  gateway-pedidos-inventario:
+    build: ./gateway-pedidos-inventario
+    image: pedidos-inventario/gateway-pedidos-inventario:local
+    restart: unless-stopped
+    mem_limit: 384m
+    ports:
+      - "8080:8080"
+    environment:
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75
+      MS_PEDIDOS_URLS: http://ms-pedidos-1:8080,http://ms-pedidos-2:8080
+      MS_INVENTARIO_URLS: http://ms-inventario-1:8080,http://ms-inventario-2:8080
+      SPRING_DATA_REDIS_HOST: redis
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+      MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT: http://otel-collector:4318/v1/logs
+      ENTORNO: ${ENTORNO:-local}
+    healthcheck: *java-healthcheck
+    depends_on:
+      ms-pedidos-1:
+        condition: service_healthy
+      ms-pedidos-2:
+        condition: service_healthy
+        required: false
+      ms-inventario-1:
+        condition: service_healthy
+      ms-inventario-2:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  kafka-data:
+  prometheus-data:
+  grafana-data:
+  seq-data:

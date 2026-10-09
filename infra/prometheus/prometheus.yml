@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: ms-pedidos
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [ms-pedidos-1:8080, ms-pedidos-2:8080]
+  - job_name: ms-inventario
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [ms-inventario-1:8080, ms-inventario-2:8080]
+  - job_name: gateway-pedidos-inventario
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [gateway-pedidos-inventario:8080]
