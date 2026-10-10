@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pedidos e Inventario</title>
+  <link rel="stylesheet" href="/estilos.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="marca"><span class="simbolo" aria-hidden="true">R</span><span>Pedidos <small>e Inventario</small></span></div>
+      <button class="conexion secundario" id="comprobar"><span class="punto" id="punto-conexion"></span><span id="conexion">Comprobando gateway…</span></button>
+    </header>
+    <section class="introduccion">
+      <h1>Pedidos e Inventario</h1>
+      <p>Crear productos, consultar stock y gestionar pedidos.</p>
+      <nav aria-label="Herramientas de observabilidad">
+        <a href="http://localhost:5342" target="_blank" rel="noopener">Seq · logs ↗</a>
+        <a href="http://localhost:16686" target="_blank" rel="noopener">Jaeger · trazas ↗</a>
+        <a href="http://localhost:3000" target="_blank" rel="noopener">Grafana ↗</a>
+        <a href="http://localhost:9090" target="_blank" rel="noopener">Prometheus ↗</a>
+        <a href="http://localhost:8080/docs" target="_blank" rel="noopener">Swagger ↗</a>
+      </nav>
+    </section>
+    <p id="aviso" class="aviso" role="status" aria-live="polite">Crea un producto o consulta uno por su ID.</p>
+    <div class="contenido">
+      <div class="operaciones">
+    <div class="paneles">
+      <section class="tarjeta" aria-labelledby="titulo-producto">
+        <div class="titulo"><span class="paso">01</span><div><h2 id="titulo-producto">Producto y stock</h2><p>Crear o consultar un producto.</p></div></div>
+        <form id="form-producto">
+          <div class="fila"><label class="crece">Nombre<input id="nombre" placeholder="Nombre del producto" maxlength="120" required></label><label class="cantidad">Stock inicial<input id="stock-inicial" type="number" min="0" max="1000000" value="5" required></label></div>
+          <p class="nota">El nombre debe ser único, sin distinguir mayúsculas ni espacios repetidos.</p>
+          <button type="submit">Crear producto</button>
+        </form>
+        <div class="separador"></div>
+        <label>Catálogo de productos<select id="productos"><option value="">Selecciona un producto…</option></select></label>
+        <div class="paginacion"><button class="enlace" id="productos-anterior" type="button" disabled>Anterior</button><span id="pagina-productos">Sin productos</span><button class="enlace" id="productos-siguiente" type="button" disabled>Siguiente</button><button class="enlace" id="actualizar-productos" type="button">Actualizar</button></div>
+        <p class="nota" id="detalle-producto">Selecciona un producto del catálogo o consulta su ID.</p>
+        <form id="form-stock">
+          <label>ID del producto<input id="id-producto" placeholder="UUID del producto" required spellcheck="false"></label>
+          <div class="acciones"><button class="secundario" type="submit">Consultar stock</button><button class="secundario" id="consultar-producto" type="button">Consultar producto</button></div>
+        </form>
+        <div class="stock" aria-live="polite">
+          <div><strong id="disponible">—</strong><span>Disponibles</span></div>
+          <div><strong id="reservado">—</strong><span>Reservadas</span></div>
+          <div><strong id="total">—</strong><span>Total</span></div>
+        </div>
+      </section>
+      <section class="tarjeta" aria-labelledby="titulo-pedido">
+        <div class="titulo"><span class="paso">02</span><div><h2 id="titulo-pedido">Pedido</h2><p>Pedido del producto seleccionado.</p></div></div>
+        <form id="form-pedido">
+          <div class="fila"><label class="cantidad">Cantidad<input id="cantidad" type="number" min="1" max="1000" value="2" required></label><div class="ayuda">Si la cantidad supera el stock, el pedido se rechaza.</div></div>
+          <label>Identificador para logs<input id="correlacion" required maxlength="100" spellcheck="false"></label>
+          <div class="acciones"><button type="submit">Crear pedido</button><button class="secundario" id="repetir" type="button" disabled>Repetir misma solicitud</button></div>
+          <p class="nota">Repetir envía los mismos datos y la misma clave de idempotencia.</p>
+        </form>
+        <div class="separador"></div>
+        <form id="form-consulta-pedido">
+          <label>ID del pedido<input id="id-pedido" placeholder="UUID del pedido" required spellcheck="false"></label>
+          <div class="acciones"><button class="secundario" type="submit">Consultar pedido</button><button class="peligro" id="cancelar" type="button" disabled>Cancelar pedido</button></div>
+        </form>
+        <div class="estado-pedido" aria-live="polite"><span class="estado" id="estado">SIN PEDIDO</span><span id="detalle-estado">Actualización automática del estado.</span></div>
+        <button id="copiar-filtro" class="enlace" type="button">Copiar filtro para Seq</button>
+      </section>
+    </div>
+    <section class="tarjeta seccion" aria-labelledby="titulo-ajuste">
+      <div class="titulo"><span class="paso">03</span><div><h2 id="titulo-ajuste">Actualizar stock</h2><p>Fija las unidades disponibles del producto seleccionado. Las reservadas no cambian.</p></div></div>
+      <form id="form-ajuste">
+        <div class="fila filtros"><label>Disponibles finales<input id="disponible-ajuste" type="number" min="0" max="10000000" value="5" required></label><label class="crece">Motivo (opcional)<input id="motivo-ajuste" maxlength="200" placeholder="Reposición, corrección, merma…"></label></div>
+        <p class="nota">Si hay 5 disponibles y quieres dejar 8, ingresa 8. Puedes dejarlos en cero.</p>
+        <div class="acciones"><button id="aplicar-ajuste" type="submit" disabled>Guardar stock</button><button class="secundario" id="repetir-ajuste" type="button" disabled>Repetir misma solicitud</button><button class="secundario" id="consultar-movimientos" type="button" disabled>Consultar movimientos</button></div>
+      </form>
+      <div class="tabla-contenedor"><table><caption>Movimientos del producto seleccionado</caption><thead><tr><th>Fecha</th><th>Tipo</th><th>Unidades</th><th>Disponibles después</th><th>Total después</th><th>Motivo</th></tr></thead><tbody id="movimientos"><tr><td colspan="6">Selecciona un producto para consultar los movimientos.</td></tr></tbody></table></div>
+      <div class="paginacion"><button class="enlace" id="movimientos-anterior" type="button" disabled>Anterior</button><span id="pagina-movimientos">Sin consultar</span><button class="enlace" id="movimientos-siguiente" type="button" disabled>Siguiente</button></div>
+    </section>
+    <section class="tarjeta seccion" aria-labelledby="titulo-listado-pedidos">
+      <div class="titulo"><span class="paso">04</span><div><h2 id="titulo-listado-pedidos">Listado de pedidos</h2><p>Consulta por fecha de creación. Selecciona un pedido para ver su detalle o cancelarlo.</p></div></div>
+      <form id="form-listado-pedidos">
+        <div class="fila filtros"><label>Desde<input id="fecha-desde" type="date"></label><label>Hasta<input id="fecha-hasta" type="date"></label><button class="secundario" type="submit">Buscar pedidos</button></div>
+        <p class="nota">Sin fechas se consulta hoy. El rango máximo es de 31 días.</p>
+      </form>
+      <div class="tabla-contenedor"><table><caption>Pedidos del rango seleccionado</caption><thead><tr><th>Pedido</th><th>Creado</th><th>Estado</th><th>Unidades</th><th>Acción</th></tr></thead><tbody id="listado-pedidos"><tr><td colspan="5">Sin consultar.</td></tr></tbody></table></div>
+      <div class="paginacion"><button class="enlace" id="pedidos-anterior" type="button" disabled>Anterior</button><span id="pagina-pedidos">Sin consultar</span><button class="enlace" id="pedidos-siguiente" type="button" disabled>Siguiente</button></div>
+    </section>
+      </div>
+    <aside class="tarjeta respuesta" aria-labelledby="titulo-respuesta">
+      <div class="cabecera-respuesta"><div><h2 id="titulo-respuesta">Respuesta del API</h2></div><span id="resultado-http" class="codigo">Sin solicitudes</span></div>
+      <details><summary>Ver solicitud y cabeceras</summary><pre id="solicitud">Sin solicitudes.</pre></details>
+      <pre id="respuesta" tabindex="0">Sin respuesta.</pre>
+    </aside>
+    </div>
+    <footer>Pedidos e Inventario · Entorno local · Seq: puerto 5342</footer>
+  </main>
+</body>
+</html>
