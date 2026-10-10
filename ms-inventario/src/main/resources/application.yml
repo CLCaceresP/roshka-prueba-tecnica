@@ -1,0 +1,126 @@
+spring:
+  jackson:
+    deserialization:
+      # La API HTTP rechaza propiedades que el contrato no define (spec 011); los mensajes de Kafka siguen siendo tolerantes.
+      fail-on-unknown-properties: true
+  application:
+    name: ms-inventario
+  datasource:
+    url: ${INVENTORY_DB_URL:jdbc:postgresql://localhost:5432/inventory_db}
+    username: ${INVENTORY_DB_USER:inventory_user}
+    password: ${INVENTORY_DB_PASSWORD:inventory_user}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        # Acota las esperas de metadatos y buffer antes de que retorne el envío asíncrono.
+        max.block.ms: 10000
+    consumer:
+      group-id: ${spring.application.name}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      # El offset se confirma de forma explícita después de que commitea la transacción de la base (ADR 0002).
+      ack-mode: manual
+      observation-enabled: true
+    template:
+      observation-enabled: true
+
+info:
+  app:
+    version: '@project.version@'
+
+management:
+  opentelemetry:
+    # Enrichers de los logs y las trazas exportados (spec 008, RN-04).
+    resource-attributes:
+      "[service.namespace]": pedidos-inventario
+      "[service.version]": '@project.version@'
+      "[deployment.environment.name]": ${ENTORNO:local}
+      "[host.name]": ${HOSTNAME:${COMPUTERNAME:desconocido}}
+      "[process.pid]": ${PID:0}
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        # Las dependencias van solo en readiness: un broker inalcanzable no debe reiniciar todas las réplicas.
+        readiness:
+          include: readinessState, db, kafka, redis
+          show-components: always
+        liveness:
+          include: livenessState
+  # Los spans se exportan solo si está definido MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT
+  # (docker compose). Sin endpoint, las trazas igual se propagan por los headers de HTTP y de Kafka.
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    metrics:
+      export:
+        # Prometheus recoge las métricas; OTLP transporta solo trazas.
+        enabled: false
+  metrics:
+    distribution:
+      percentiles-histogram:
+        saga.duration: true
+        outbox.publish.lag: true
+        distributed.lock.wait: true
+
+logging:
+  structured:
+    format:
+      console: logstash
+    json:
+      add:
+        application: ${spring.application.name}
+        group: pedidos-inventario
+        environment: ${ENTORNO:local}
+        machineName: ${HOSTNAME:${COMPUTERNAME:desconocido}}
+  level:
+    org.apache.kafka: WARN
+
+idempotencia:
+  ttl: 24h
+  reintentar-despues: 1s
+  # Cero: un duplicado concurrente recibe 409 + Retry-After de inmediato en lugar de hacer cola tras el bloqueo.
+  espera-bloqueo: 0ms
+  lease-bloqueo: 10s
+
+springdoc:
+  # La API solo produce JSON; sin esto el documento declara las respuestas bajo */*.
+  default-produces-media-type: application/json
+
+paginacion:
+  tamanio-por-defecto: 20
+  tamanio-maximo: 100
+
+bloqueo:
+  redis:
+    direccion: ${BLOQUEO_REDIS_DIRECCION:redis://localhost:6379}
+
+mensajeria:
+  timeout-salud: 3s
+  topicos:
+    particiones: 3
+    replicas: 1
+  reintentos:
+    intervalo-inicial: 200ms
+    multiplicador: 2.0
+    intervalo-maximo: 5s
+    # Acota el bloqueo de cabeza de línea de una partición; por debajo de max.poll.interval.ms (5 min).
+    tiempo-maximo-transcurrido: 30s
+
+outbox:
+  publicador:
+    intervalo-sondeo: 200ms
+    tamanio-lote: 100
+    timeout-envio: 10s
+    # Se renueva antes de cada fila; debe cubrir max.block.ms + timeout-envio + la actualización en la base.
+    bloqueo-maximo: 30s
