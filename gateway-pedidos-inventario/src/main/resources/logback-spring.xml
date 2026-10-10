@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <!-- Consola en JSON estructurado; el formato sale de logging.structured.format.console. -->
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+      <format>${CONSOLE_LOG_STRUCTURED_FORMAT}</format>
+      <charset>${CONSOLE_LOG_CHARSET}</charset>
+    </encoder>
+  </appender>
+
+  <!-- Envía cada log a OpenTelemetry; solo exporta si hay un endpoint de logs configurado. -->
+  <appender name="OPENTELEMETRY"
+            class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+    <captureExperimentalAttributes>true</captureExperimentalAttributes>
+    <captureKeyValuePairAttributes>true</captureKeyValuePairAttributes>
+    <captureMdcAttributes>*</captureMdcAttributes>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="OPENTELEMETRY"/>
+  </root>
+</configuration>

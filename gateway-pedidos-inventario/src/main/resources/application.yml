@@ -1,0 +1,106 @@
+spring:
+  application:
+    name: gateway-pedidos-inventario
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+  cloud:
+    loadbalancer:
+      # Las instancias son estáticas (ver gateway.servidores-backend); no hay nada que cachear.
+      cache:
+        enabled: false
+    gateway:
+      server:
+        webflux:
+          default-filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: ${gateway.limite-tasa.tasa-reposicion}
+                redis-rate-limiter.burstCapacity: ${gateway.limite-tasa.capacidad-rafaga}
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@resolutorClaveCliente}"
+          routes:
+            - id: orders
+              uri: lb://ms-pedidos
+              predicates:
+                - Path=/orders, /orders/**
+            - id: products
+              uri: lb://ms-inventario
+              predicates:
+                - Path=/products, /products/**
+            # La documentación de cada servicio se publica por el gateway (ADR 0023).
+            - id: docs-pedidos
+              uri: lb://ms-pedidos
+              predicates:
+                - Path=/docs/ms-pedidos/v3/api-docs
+              filters:
+                - RewritePath=/docs/ms-pedidos/(?<ruta>.*), /$\{ruta}
+            - id: docs-inventario
+              uri: lb://ms-inventario
+              predicates:
+                - Path=/docs/ms-inventario/v3/api-docs
+              filters:
+                - RewritePath=/docs/ms-inventario/(?<ruta>.*), /$\{ruta}
+
+springdoc:
+  swagger-ui:
+    path: /docs
+    urls:
+      - name: ms-pedidos
+        url: /docs/ms-pedidos/v3/api-docs
+      - name: ms-inventario
+        url: /docs/ms-inventario/v3/api-docs
+
+gateway:
+  # Réplicas detrás de cada ruta, separadas por comas; docker compose pasa una o dos por servicio.
+  servidores-backend:
+    ms-pedidos: ${MS_PEDIDOS_URLS:http://localhost:8081}
+    ms-inventario: ${MS_INVENTARIO_URLS:http://localhost:8091}
+  limite-tasa:
+    # Por dirección de cliente; lo bastante holgado para la prueba de carga de k6 desde un solo equipo.
+    tasa-reposicion: ${RATE_LIMIT_REPLENISH_RATE:500}
+    capacidad-rafaga: ${RATE_LIMIT_BURST_CAPACITY:1000}
+
+management:
+  opentelemetry:
+    # Enrichers de los logs y las trazas exportados (spec 008, RN-04).
+    resource-attributes:
+      "[service.namespace]": pedidos-inventario
+      "[service.version]": '@project.version@'
+      "[deployment.environment.name]": ${ENTORNO:local}
+      "[host.name]": ${HOSTNAME:${COMPUTERNAME:desconocido}}
+      "[process.pid]": ${PID:0}
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState, redis
+          show-components: always
+        liveness:
+          include: livenessState
+  # Los spans se exportan solo si está definido MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT.
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
+  otlp:
+    metrics:
+      export:
+        enabled: false
+
+logging:
+  structured:
+    format:
+      console: logstash
+    json:
+      add:
+        application: ${spring.application.name}
+        group: pedidos-inventario
+        environment: ${ENTORNO:local}
+        machineName: ${HOSTNAME:${COMPUTERNAME:desconocido}}
