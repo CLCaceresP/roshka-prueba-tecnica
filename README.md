@@ -314,6 +314,7 @@ Así quedó en Seq una cancelación real que le ganó a la reserva por milisegun
 - [AsyncAPI](docs/asyncapi.yaml)
 - [Recuperación de mensajes en la DLT](docs/dlt-recovery.md)
 - [Guía del front local](front/README.md)
+- [Guía de pruebas con el front](docs/guia-de-pruebas-con-el-front.md), con capturas de cada escenario
 - [Colección de Postman](postman/README.md)
 - OpenAPI en `/v3/api-docs` de cada servicio y en el Swagger UI del gateway.
 
