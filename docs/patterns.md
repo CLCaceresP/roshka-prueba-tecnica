@@ -1,0 +1,26 @@
+# Patrones de diseño
+
+Solo se usan patrones que resuelven un problema concreto de este sistema. Cada uno indica dónde está y qué alternativa se descartó. Requisito: BON-01.
+
+| Patrón | Problema que resuelve aquí | Dónde | Alternativa descartada |
+|---|---|---|---|
+| **Saga orquestada** | Crear un pedido toca dos bases sin transacción común; cancelación, timeout y respuestas tardías tienen que decidirse en un solo lugar. | `ms-pedidos/.../aplicacion/saga/` (`SagaReserva`, `PasosSaga`, `RespuestaInventarioHandler`, `TimeoutSagaHandler`) | Coreografía: la lógica de "cancelado mientras se reservaba" quedaría repartida en dos servicios ([ADR 0004](adr/0004-saga-orquestada-dentro-de-ms-pedidos.md)). |
+| **Transactional Outbox** | Dual-write entre la base y Kafka: un mensaje no puede perderse ni salir de una transacción revertida. | `JdbcOutboxMensajes`, `OutboxPublisher` (ambos servicios), migración `V2__messaging.sql` | Publicar tras el commit, que pierde mensajes si el proceso cae; CDC, recomendado en producción ([ADR 0003](adr/0003-outbox-con-polling-y-shedlock.md)). |
+| **Idempotent Consumer** | At-least-once: el mismo `idMensaje` puede llegar varias veces. | `JdbcMensajesProcesados` + `ReservarStockHandler`, `LiberarStockHandler`, `PasosSaga` | Solo idempotencia por estado: no detecta duplicados exactos ni permite contarlos ([ADR 0010](adr/0010-consumidor-idempotente-y-tombstone.md)). |
+| **Idempotency Key** | Reintentos HTTP del cliente y duplicados concurrentes entre instancias. | `aplicacion/idempotencia/` (`ProcesadorSolicitudIdempotente`, `TransaccionIdempotente`), `JdbcAlmacenClavesIdempotencia` | Filtro HTTP con caché en Redis, que no comparte transacción con el efecto ([ADR 0011](adr/0011-idempotencia-http.md)). |
+| **State** | La tabla estado × entrada de la spec 004 tiene que verse completa y que ningún caso quede sin decidir. | `EstadoPedido` (un enum con comportamiento por constante) | `switch` repartido en los métodos de `Pedido` ([ADR 0012](adr/0012-maquina-de-estados-de-pedido.md)). |
+| **Compensating Transaction** | Deshacer una reserva cuando el pedido se cancela, vence o recibe una reserva tardía. | `LiberarStock` con `CANCELADO_POR_CLIENTE`, `TIMEOUT_SAGA` y `COMPENSACION_RESERVA_TARDIA`; `Reservation.release()` | 2PC/XA entre Postgres y Kafka: no es viable ni deseable. |
+| **Tombstone** | Un `LiberarStock` que llega antes que su `ReservarStock` (replay desde la DLT). | `Reservation.tombstone()`, `LiberarStockHandler` | Ignorar el release: el `ReservarStock` posterior retendría stock de un pedido cancelado. |
+| **Domain Events** | El dominio decide qué pasó; el orquestador decide qué comando enviar, sin que el dominio conozca Kafka. | `EventoPedido`, `Order.extraerEventos()`, `SagaReserva.dispatch()` | Que el agregado escriba en el outbox: acopla el dominio a la infraestructura. |
+| **Hexagonal / Ports & Adapters** | El dominio y los casos de uso se prueban sin Spring ni infraestructura; el SQL y Kafka quedan en el borde. | Paquetes `dominio`, `aplicacion.puertos.entrada/out`, `adaptadores.entrada/out`; `ArquitecturaHexagonalArchTest` | Capas clásicas controller-service-repository, con el dominio anémico y acoplado a JPA. |
+| **Repository** | Persistir agregados sin que los casos de uso conozcan JPA o JDBC. | `PedidoRepository`/`JpaPedidoRepository`, `ReservaRepository`/`JdbcReservaRepository`, `ProductoRepository` | Usar `EntityManager` o `JdbcClient` en los casos de uso. |
+| **Optimistic Locking** (con incremento forzado) | Dos pasos de saga sobre el mismo pedido no pueden commitear ambos, y el orden del outbox debe coincidir con el de commit. | `PedidoEntity` (`@Version`), `JpaPedidoRepository.update()` | Locks pesimistas en cada lectura; o confiar solo en el lock distribuido ([ADR 0005](adr/0005-bloqueo-distribuido-como-defensa-en-profundidad.md)). |
+| **Defense in Depth** (lock distribuido) | Reducir conflictos entre instancias sin que la corrección dependa de Redis. | `RedissonBloqueoDistribuido`, `BloqueosPedido`, locks `idem:*` y `order:*` | Lock como única barrera: incorrecto si vence el lease ([ADR 0005](adr/0005-bloqueo-distribuido-como-defensa-en-profundidad.md)). |
+| **Test Doubles: fakes** | Probar los casos de uso con la semántica de la base sin levantarla. | `InventarioEnMemoria`, `PedidosEnMemoria`, `BloqueoRegistrador` | Mocks de Mockito por interacción, que prueban la implementación y no el comportamiento. |
+
+## Patrones considerados y no usados
+
+- **Strategy para clasificar errores reintentables y no reintentables.** El `DefaultErrorHandler` de Spring Kafka ya incluye esa estrategia (`ExceptionClassifier`). La clasificación se declara en `ManejoErroresKafka` con `addNotRetryableExceptions(...)`. Una jerarquía propia de estrategias habría sido una capa sin función.
+- **Circuit Breaker (Resilience4j).** No hay llamadas síncronas entre servicios: toda la comunicación es asíncrona por Kafka. Agregarlo habría sido decorativo ([ADR 0006](adr/0006-reintentos-bloqueantes-y-dlt.md)).
+- **CQRS.** Las lecturas (`GET /orders/{id}`, `GET /products/{id}/stock`) son por clave sobre el mismo modelo; un modelo de lectura separado no aporta nada en este alcance.
+- **Event Sourcing.** El estado actual alcanza para todas las decisiones de la saga; el historial completo de eventos no es un requisito.

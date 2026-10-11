@@ -1,0 +1,263 @@
+asyncapi: 3.0.0
+info:
+  title: Mensajes de la saga de pedidos e inventario
+  version: 1.0.0
+  description: |
+    Comandos y eventos de la saga de reserva (spec 003 y spec 004). La entrega es at-least-once:
+    cada consumidor deduplica por `idMensaje` y aplica los efectos de forma idempotente por estado.
+    La key del record de Kafka es siempre el id del pedido, así que todos los mensajes de un pedido
+    conservan su orden dentro de una partición. Los mensajes que no se pueden procesar van a
+    `<topico>.DLT`, en la misma partición, con la causa en los headers `kafka_dlt-*` (ADR 0006).
+    El header `traceparent` de W3C transporta la traza.
+defaultContentType: application/json
+
+servers:
+  local:
+    host: localhost:29092
+    protocol: kafka
+    description: Kafka de docker-compose.yml (listener PLAINTEXT_HOST)
+
+channels:
+  comandosInventario:
+    address: inventario.comandos
+    description: Comandos de ms-pedidos hacia ms-inventario.
+    messages:
+      reservarStock:
+        $ref: '#/components/messages/ReservarStock'
+      liberarStock:
+        $ref: '#/components/messages/LiberarStock'
+    bindings:
+      kafka:
+        partitions: 3
+  eventosInventario:
+    address: inventario.eventos
+    description: Respuestas de ms-inventario; exactamente una por cada comando distinto.
+    messages:
+      stockReservado:
+        $ref: '#/components/messages/StockReservado'
+      stockRechazado:
+        $ref: '#/components/messages/StockRechazado'
+      stockLiberado:
+        $ref: '#/components/messages/StockLiberado'
+    bindings:
+      kafka:
+        partitions: 3
+  comandosInventarioMensajesMuertos:
+    address: inventario.comandos.DLT
+    description: Comandos que ms-inventario no pudo procesar; se reprocesan a mano.
+    messages:
+      reservarStock:
+        $ref: '#/components/messages/ReservarStock'
+      liberarStock:
+        $ref: '#/components/messages/LiberarStock'
+  eventosInventarioMensajesMuertos:
+    address: inventario.eventos.DLT
+    description: Respuestas que ms-pedidos no pudo procesar; se reprocesan a mano.
+    messages:
+      stockReservado:
+        $ref: '#/components/messages/StockReservado'
+      stockRechazado:
+        $ref: '#/components/messages/StockRechazado'
+      stockLiberado:
+        $ref: '#/components/messages/StockLiberado'
+
+operations:
+  pedidosEnviaComandos:
+    action: send
+    summary: ms-pedidos publica los comandos a través de su outbox transaccional.
+    channel:
+      $ref: '#/channels/comandosInventario'
+  inventarioRecibeComandos:
+    action: receive
+    summary: ms-inventario reserva todas las líneas o ninguna, o libera como máximo una vez.
+    channel:
+      $ref: '#/channels/comandosInventario'
+  inventarioEnviaEventos:
+    action: send
+    summary: ms-inventario publica las respuestas a través de su outbox transaccional.
+    channel:
+      $ref: '#/channels/eventosInventario'
+  pedidosRecibeEventos:
+    action: receive
+    summary: El orquestador de la saga aplica las respuestas bajo el bloqueo del pedido.
+    channel:
+      $ref: '#/channels/eventosInventario'
+
+components:
+  messages:
+    ReservarStock:
+      name: ReservarStock
+      title: Reservar todas las líneas de un pedido, o ninguna
+      bindings:
+        kafka:
+          key:
+            $ref: '#/components/schemas/IdPedido'
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/Sobre'
+          - type: object
+            properties:
+              tipo:
+                const: ReservarStock
+              carga:
+                $ref: '#/components/schemas/CargaReservarStock'
+    LiberarStock:
+      name: LiberarStock
+      title: Liberar lo que retiene un pedido; deja un tombstone si no había nada reservado
+      bindings:
+        kafka:
+          key:
+            $ref: '#/components/schemas/IdPedido'
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/Sobre'
+          - type: object
+            properties:
+              tipo:
+                const: LiberarStock
+              carga:
+                $ref: '#/components/schemas/CargaLiberarStock'
+    StockReservado:
+      name: StockReservado
+      bindings:
+        kafka:
+          key:
+            $ref: '#/components/schemas/IdPedido'
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/Sobre'
+          - type: object
+            properties:
+              tipo:
+                const: StockReservado
+              carga:
+                $ref: '#/components/schemas/CargaStockReservado'
+    StockRechazado:
+      name: StockRechazado
+      bindings:
+        kafka:
+          key:
+            $ref: '#/components/schemas/IdPedido'
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/Sobre'
+          - type: object
+            properties:
+              tipo:
+                const: StockRechazado
+              carga:
+                $ref: '#/components/schemas/CargaStockRechazado'
+    StockLiberado:
+      name: StockLiberado
+      bindings:
+        kafka:
+          key:
+            $ref: '#/components/schemas/IdPedido'
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/Sobre'
+          - type: object
+            properties:
+              tipo:
+                const: StockLiberado
+              carga:
+                $ref: '#/components/schemas/CargaStockLiberado'
+
+  schemas:
+    IdPedido:
+      type: string
+      format: uuid
+      description: Id del pedido; key del record de Kafka e `idAgregado` del sobre.
+    Sobre:
+      type: object
+      required: [idMensaje, tipo, versionEsquema, ocurridoEn, idCorrelacion, idAgregado, carga]
+      properties:
+        idMensaje:
+          type: string
+          format: uuid
+          description: Único por mensaje; los consumidores deduplican por este valor.
+        tipo:
+          type: string
+        versionEsquema:
+          type: integer
+          const: 1
+          description: Una versión desconocida no se reintenta y va a la DLT.
+        ocurridoEn:
+          type: string
+          format: date-time
+        idCorrelacion:
+          type: string
+          description: Se propaga sin cambios desde la solicitud de origen a lo largo de la saga.
+        idCausa:
+          type: [string, 'null']
+          format: uuid
+          description: idMensaje del mensaje que causó este; nulo para solicitudes y jobs.
+        idAgregado:
+          $ref: '#/components/schemas/IdPedido'
+        carga:
+          type: object
+    LineaStock:
+      type: object
+      required: [idProducto, cantidad]
+      properties:
+        idProducto:
+          type: string
+          format: uuid
+        cantidad:
+          type: integer
+          minimum: 1
+          maximum: 1000
+    CargaReservarStock:
+      type: object
+      required: [idPedido, lineas]
+      properties:
+        idPedido:
+          $ref: '#/components/schemas/IdPedido'
+        lineas:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/LineaStock'
+    CargaLiberarStock:
+      type: object
+      required: [idPedido, motivo]
+      properties:
+        idPedido:
+          $ref: '#/components/schemas/IdPedido'
+        motivo:
+          type: string
+          enum: [CANCELADO_POR_CLIENTE, TIMEOUT_SAGA, COMPENSACION_RESERVA_TARDIA]
+    CargaStockReservado:
+      type: object
+      required: [idPedido, lineas]
+      properties:
+        idPedido:
+          $ref: '#/components/schemas/IdPedido'
+        lineas:
+          type: array
+          items:
+            $ref: '#/components/schemas/LineaStock'
+    CargaStockRechazado:
+      type: object
+      required: [idPedido, motivo, idsProducto]
+      properties:
+        idPedido:
+          $ref: '#/components/schemas/IdPedido'
+        motivo:
+          type: string
+          enum: [STOCK_INSUFICIENTE, PRODUCTO_DESCONOCIDO, RESERVA_LIBERADA]
+        idsProducto:
+          type: array
+          items:
+            type: string
+            format: uuid
+    CargaStockLiberado:
+      type: object
+      required: [idPedido, desenlace]
+      properties:
+        idPedido:
+          $ref: '#/components/schemas/IdPedido'
+        desenlace:
+          type: string
+          enum: [DEVUELTO, TOMBSTONE_REGISTRADO, NADA_QUE_LIBERAR]
